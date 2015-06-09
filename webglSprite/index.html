@@ -1,0 +1,386 @@
+<html>
+
+<head>
+<title>Sprite Profiler</title>
+<meta http-equiv="content-type" content="text/html; charset=ISO-8859-1">
+
+<script type="text/javascript" src="glMatrix-0.9.5.min.js"></script>
+<script type="text/javascript" src="webgl-utils.js"></script>
+<script type="text/javascript" src="ImageParticle.js"></script> 
+
+<script id="shader-fs" type="x-shader/x-fragment">
+    precision mediump float;
+
+    varying vec2 vTextureCoord;
+
+    uniform sampler2D uSampler;
+
+    void main(void) {
+//	  gl_FragColor = vec4(0,0,1,.5);
+        gl_FragColor = texture2D(uSampler, vec2(vTextureCoord.s, vTextureCoord.t));
+    }
+</script>
+
+<script id="shader-vs" type="x-shader/x-vertex">
+    attribute vec3 aVertexPosition;
+    attribute vec2 aTextureCoord;
+
+    uniform mat4 uMVMatrix;
+    uniform mat4 uPMatrix;
+
+    varying vec2 vTextureCoord;
+
+    void main(void) {
+        gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0);
+        vTextureCoord = aTextureCoord;
+    }
+</script>
+
+
+<script type="text/javascript">
+
+	var gl;
+
+	var drawing = true,
+running = true,
+mouseDown = false,
+visible = true,
+particles = [],
+
+MAX_PARTICLES = 40000,
+num_particles = 1000;
+
+var SCREEN_WIDTH, SCREEN_HEIGHT;
+var ball_img;
+var container;
+	
+	var msec = 0;
+	var frame = 0;
+var lastTime = new Date();
+
+     var neheTexture;
+var vertices, texcoords;
+
+     var geomVB, geomTB;
+
+     var mvMatrix = mat4.create();
+     var mvMatrixStack = [];
+     var pMatrix = mat4.create();
+
+
+    function makeParticle( particleCount ) {	
+
+		particles = [];
+		
+    for( var i = 0; i < particleCount; i++ ) {
+
+      particle = new ImageParticle( ball_img, randomRange(0, SCREEN_WIDTH)-64, randomRange(0, SCREEN_HEIGHT)-64 );
+      particle.velX = 0;
+      particle.velY = 0;
+      particles.push( particle ); 	  
+    }
+
+	vertices = new Float32Array( 2*6*particleCount );
+	texcoords = new Float32Array( 2*6*particleCount );
+	
+	for (var i=0, j=0, k=0; i < particleCount; i++) {
+		vertices[j++] = particles[i].posX;		vertices[j++] = particles[i].posY;
+		vertices[j++] = particles[i].posX+32;		vertices[j++] = particles[i].posY;
+		vertices[j++] = particles[i].posX+32;		vertices[j++] = particles[i].posY+32;
+		vertices[j++] = particles[i].posX;		vertices[j++] = particles[i].posY;
+		vertices[j++] = particles[i].posX+32;		vertices[j++] = particles[i].posY+32;
+		vertices[j++] = particles[i].posX;		vertices[j++] = particles[i].posY+32;
+		
+		texcoords[k++] = 0.0; texcoords[k++] = 0.0;
+		texcoords[k++] = 1.0; texcoords[k++] = 0.0;
+		texcoords[k++] = 1.0; texcoords[k++] = 1.0;
+
+		texcoords[k++] = 0.0; texcoords[k++] = 0.0;
+		texcoords[k++] = 1.0; texcoords[k++] = 1.0;
+		texcoords[k++] = 0.0; texcoords[k++] = 1.0;
+
+	}	
+
+	initBuffers ();
+	 }
+
+
+
+  document.addEventListener( 'keydown', function(e){
+  
+      var display;
+	
+	if ( e.keyCode === 81 ) {
+		num_particles -= 10000; 	
+		makeParticle( num_particles );  
+	}
+	if ( e.keyCode === 87 ) {
+		num_particles += 10000; 	
+		makeParticle( num_particles );  
+	}
+	if ( e.keyCode === 90 ) { 
+		num_particles -= 100; 
+		makeParticle( num_particles );  
+	}
+    if ( e.keyCode === 88 ) { 
+		num_particles += 100; 
+	    makeParticle( num_particles );  
+	}
+    if ( e.keyCode === 68 ) { 
+		drawing = !drawing;
+	}	
+    if ( e.keyCode === 80 ) {
+		running = !running;
+    }    
+    
+  }, false );
+
+    function initGL(canvas) {
+        try {
+            gl = canvas.getContext("experimental-webgl");
+            gl.viewportWidth = canvas.width;
+            gl.viewportHeight = canvas.height;
+   		 SCREEN_WIDTH = canvas.width;
+		 SCREEN_HEIGHT = canvas.height;
+        } catch (e) {
+        }
+        if (!gl) {
+            alert("Could not initialise WebGL, sorry :-(");
+        }
+    }
+
+
+    function getShader(gl, id) {
+        var shaderScript = document.getElementById(id);
+        if (!shaderScript) {
+            return null;
+        }
+
+        var str = "";
+        var k = shaderScript.firstChild;
+        while (k) {
+            if (k.nodeType == 3) {
+                str += k.textContent;
+            }
+            k = k.nextSibling;
+        }
+
+        var shader;
+        if (shaderScript.type == "x-shader/x-fragment") {
+            shader = gl.createShader(gl.FRAGMENT_SHADER);
+        } else if (shaderScript.type == "x-shader/x-vertex") {
+            shader = gl.createShader(gl.VERTEX_SHADER);
+        } else {
+            return null;
+        }
+
+        gl.shaderSource(shader, str);
+        gl.compileShader(shader);
+
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            alert(gl.getShaderInfoLog(shader));
+            return null;
+        }
+
+        return shader;
+    }
+
+
+    var shaderProgram;
+
+    function initShaders() {
+        var fragmentShader = getShader(gl, "shader-fs");
+        var vertexShader = getShader(gl, "shader-vs");
+
+        shaderProgram = gl.createProgram();
+        gl.attachShader(shaderProgram, vertexShader);
+        gl.attachShader(shaderProgram, fragmentShader);
+        gl.linkProgram(shaderProgram);
+
+        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+            alert("Could not initialise shaders");
+        }
+
+        gl.useProgram(shaderProgram);
+
+        shaderProgram.vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+        gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
+
+        shaderProgram.textureCoordAttribute = gl.getAttribLocation(shaderProgram, "aTextureCoord");
+        gl.enableVertexAttribArray(shaderProgram.textureCoordAttribute);
+
+        shaderProgram.pMatrixUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
+        shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+        shaderProgram.samplerUniform = gl.getUniformLocation(shaderProgram, "uSampler");
+    }
+
+
+    function handleLoadedTexture(texture) {
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texture.image);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+
+    function initTexture() {
+	   
+        neheTexture = gl.createTexture();
+        ball_img = new Image();
+        ball_img.onload = function () {
+            handleLoadedTexture(neheTexture)
+        }
+        neheTexture.image = ball_img;
+
+        ball_img.src = "ball32.png";
+    }
+
+
+
+    function mvPushMatrix() {
+        var copy = mat4.create();
+        mat4.set(mvMatrix, copy);
+        mvMatrixStack.push(copy);
+    }
+
+    function mvPopMatrix() {
+        if (mvMatrixStack.length == 0) {
+            throw "Invalid popMatrix!";
+        }
+        mvMatrix = mvMatrixStack.pop();
+    }
+
+
+    function setMatrixUniforms() {
+        gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
+        gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+    }
+
+
+    function degToRad(degrees) {
+        return degrees * Math.PI / 180;
+    }
+
+
+    function initBuffers() {
+        geomVB = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, geomVB);
+        gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.DYNAMIC_DRAW);
+        geomVB.itemSize = 2;
+        geomVB.numItems = 6*num_particles;
+
+        geomTB = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, geomTB);
+        gl.bufferData(gl.ARRAY_BUFFER, texcoords, gl.DYNAMIC_DRAW);
+        geomTB.itemSize = 2;
+        geomTB.numItems = 6*num_particles;
+    }
+
+    var xRot = 0;
+    var yRot = 0;
+    var zRot = 0;
+
+    function loop() {
+
+	frame = frame + 1;
+	if ( frame >= 30 ) {
+		var d = new Date();
+		msec = (d.getTime() - lastTime ) / frame;
+		lastTime = d;
+		frame = 0;
+	}
+      container.innerHTML = "NUM: "+num_particles + "  MSEC: " + msec;
+
+
+	if ( running ) {
+		for( var i = 0, j=0, k=0; i < num_particles; i++ ) {
+			particles[i].update();
+		}
+
+	}
+	if ( drawing ) {
+
+		for( var i = 0, j=0, k=0; i < num_particles; i++ ) {
+		vertices[j++] = particles[i].posX;		vertices[j++] = particles[i].posY;
+		vertices[j++] = particles[i].posX+32;		vertices[j++] = particles[i].posY;
+		vertices[j++] = particles[i].posX+32;		vertices[j++] = particles[i].posY+32;
+		vertices[j++] = particles[i].posX;		vertices[j++] = particles[i].posY;
+		vertices[j++] = particles[i].posX+32;		vertices[j++] = particles[i].posY+32;
+		vertices[j++] = particles[i].posX;		vertices[j++] = particles[i].posY+32;
+		}
+		gl.bindBuffer(gl.ARRAY_BUFFER, geomVB);
+	     gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.DYNAMIC_DRAW);
+
+        gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+	   mat4.identity(pMatrix);
+        mat4.scale ( pMatrix, [2.0/SCREEN_WIDTH, -2.0/SCREEN_HEIGHT, 1] );
+        mat4.translate ( pMatrix, [-(SCREEN_WIDTH)/2.0, -(SCREEN_HEIGHT)/2.0, 0] );
+
+	   mat4.identity(mvMatrix);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, geomVB);
+        gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, geomVB.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, geomTB);
+        gl.vertexAttribPointer(shaderProgram.textureCoordAttribute, geomTB.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, neheTexture);
+        gl.uniform1i(shaderProgram.samplerUniform, 0);
+
+        setMatrixUniforms();
+        gl.drawArrays(gl.TRIANGLES, 0, 6*num_particles );     
+     }
+
+        requestAnimFrame(loop, 1 );
+    }
+
+
+    function webGLStart() {
+
+        var canvas = document.getElementById("lesson05-canvas");
+	   container = document.querySelector( 'section' )
+
+	   container.innerHTML = "initGL!";
+        initGL(canvas);	   				
+
+	   container.innerHTML = "makeParticle!";
+	   makeParticle ( num_particles );
+
+	   container.innerHTML = "initShaders!";
+        initShaders();
+
+	   container.innerHTML = "initTexture!";
+        initTexture();
+
+        gl.clearColor (0.0, 0.0, 0.0, 1.0);
+        gl.disable(gl.DEPTH_TEST);
+	   gl.enable(gl.BLEND );
+        gl.blendFunc ( gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA );
+
+//        gl.blendFuncSeparate ( gl.SRC_COLOR, gl.ZERO, gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA );
+
+
+	   container.innerHTML = "Running!";
+
+        loop();
+    }
+
+
+</script>
+
+
+</head>
+
+
+<body onload="webGLStart();" bgcolor=#000000>
+    <font color=white>WebGL/JavaScript - Sprite Profiler (R.Hoetzlein, 2012)<br>
+    Mode: VBO<br>
+    <section>START</section></font>
+    <canvas id="lesson05-canvas" style="border: none;" width="1280" height="900"></canvas>
+    <br/>
+    <br />
+</body></html>
